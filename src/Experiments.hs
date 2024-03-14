@@ -6,7 +6,7 @@
 
 module Experiments where
 
-import Classes (DerivGen, Generate (gen), Pick (..), generate)
+import Classes (DerivGen, Generate (gen), Pick (..), generate, Stats, generateStats, printStats', failure, singleton)
 import Control.Monad (forM_, replicateM, unless, when)
 import Data.Hashable (Hashable)
 import Data.IORef (modifyIORef, newIORef, readIORef)
@@ -47,7 +47,7 @@ import Text.Printf (printf)
 
 -- | Defines the parameters of the experimental setup.
 currentExperiments :: [Experiment]
-currentExperiments = [bst, sorted, avl, stlc]
+currentExperiments = [sorted] -- [bst, sorted, avl, stlc]
   where
     bst = Experiment "BST" genTree 50 isBST
     sorted = Experiment "SORTED" genList 50 isSorted
@@ -56,7 +56,7 @@ currentExperiments = [bst, sorted, avl, stlc]
     div3 = Experiment "DIV3" genT 1 sumLeavesMul3
 
 runningTime :: Seconds
-runningTime = Seconds 60
+runningTime = Seconds 10 -- 60
 
 makeCharts :: Bool
 makeCharts = False
@@ -70,8 +70,14 @@ main = do
     putStrLn $ "[" ++ ename ++ "]"
     generateManyQC runningTime (fromJust <$> gen g) valid
       >>= processResults "QCRS" ename valid
+    putStrLn "QCRS stats version:"
+    generateManyQCStats runningTime (fromJust <$> gen g) valid
+      >>= printStats'
     generateMany runningTime g valid samples
       >>= processResults "Grad" ename valid
+    putStrLn "Grad stats version:"
+    generateManyStats runningTime g valid samples
+      >>= printStats'
   where
     processResults tag ename valid m = do
       unless (all valid (Map.keys m)) $ error "INVALID" -- Coherence check, for safety
@@ -161,6 +167,29 @@ generateMany cutoff g valid n = do
           )
         aux acc
 
+-- | Generate valid inputs for a given period of time using CGS.
+generateManyStats ::
+  ( DerivGen g,
+    Eq a,
+    Hashable a,
+    Show a,
+    Ord a
+  ) =>
+  Seconds ->
+  g a ->
+  (a -> Bool) ->
+  Int ->
+  IO (Stats a)
+generateManyStats cutoff g valid n = do
+  acc <- newIORef mempty
+  timeout cutoff (aux acc)
+  readIORef acc
+  where
+    aux acc = do
+      stats <- generateStats g valid n
+      modifyIORef acc (stats <>)
+      aux acc
+
 -- | Generate valid inputs for a given period of time using rejection sampling.
 generateManyQC ::
   (Show a, Ord a) =>
@@ -180,6 +209,27 @@ generateManyQC cutoff g valid = do
         else do
           t <- getMonotonicTimeNSec
           modifyIORef acc (insertIfAbsent x t)
+          aux acc
+
+generateManyQCStats ::
+  (Show a, Ord a, Hashable a) =>
+  Seconds ->
+  QC.Gen a ->
+  (a -> Bool) ->
+  IO (Stats a)
+generateManyQCStats cutoff g valid = do
+  acc <- newIORef mempty
+  timeout cutoff (aux acc)
+  readIORef acc
+  where
+    aux acc = do
+      x <- QC.generate g
+      if not (valid x)
+        then do
+          modifyIORef acc (failure <>)
+          aux acc
+        else do
+          modifyIORef acc (singleton x <>)
           aux acc
 
 ----------------------------------------------------------------------------------------------------
